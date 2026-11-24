@@ -1,4 +1,5 @@
 feedparser
-supabase
 requests
 beautifulsoup4
+pyyaml
+supabase
