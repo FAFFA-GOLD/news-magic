@@ -12,7 +12,7 @@ import requests
 import yaml
 
 from ai_news.config import Settings
-from ai_news.text_utils import clean_rss_text
+from ai_news.text_utils import clean_rss_text, normalize_feed_title
 
 
 @dataclass
@@ -93,7 +93,7 @@ def fetch_feed_entries(
             FeedEntry(
                 source=source,
                 url=link.strip(),
-                title=clean_rss_text(title.strip()) or title.strip(),
+                title=normalize_feed_title(title.strip(), source, entry),
                 rss_summary=summary,
                 published_at=published,
             )

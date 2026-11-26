@@ -10,6 +10,10 @@ on:
         description: Notion の要約未処理行を再要約してダイジェストを更新
         type: boolean
         default: false
+      cleanup_text:
+        description: Notion 既存行のタイトル/要約テキストをクリーンアップ（LLM 不使用）
+        type: boolean
+        default: false
 
 jobs:
   collect_and_digest:
@@ -44,7 +48,9 @@ jobs:
           DIGEST_WEBHOOK_URL: ${{ secrets.DIGEST_WEBHOOK_URL }}
         run: |
           ARGS=""
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.reanalyze_fallback }}" = "true" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.cleanup_text }}" = "true" ]; then
+            ARGS="--cleanup-text"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.reanalyze_fallback }}" = "true" ]; then
             ARGS="--reanalyze-fallback"
           fi
           python -m ai_news.pipeline $ARGS

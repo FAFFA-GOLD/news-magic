@@ -14,8 +14,8 @@ class TestFallbackSelection(unittest.TestCase):
             is_fallback_candidate(tags=[FALLBACK_TAG], importance=4, category="研究")
         )
 
-    def test_legacy_fallback_combo(self) -> None:
-        self.assertTrue(
+    def test_legacy_combo_not_selected(self) -> None:
+        self.assertFalse(
             is_fallback_candidate(tags=[], importance=3, category="業界動向")
         )
 

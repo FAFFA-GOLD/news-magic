@@ -92,6 +92,14 @@ python scripts/verify_feeds.py
 - **Python**: 3.12
 - **失敗時**: 候補があるのに 0 件保存、または LLM がほぼ全件失敗した場合は exit code 1
 
+### ダイジェスト表示
+
+Notion 上の **AIダイジェスト** ページは `heading_2`・`bulleted_list_item`（タイトルリンク・重要度・要約）で構成されます。Webhook / ログ出力のみ Markdown です。`要約未処理` タグ付きは末尾セクションに分離されます。
+
+### 既存行のテキストクリーンアップ
+
+`python -m ai_news.pipeline --cleanup-text` または Actions で `cleanup_text=true`（LLM 不使用）。
+
 ### フォールバック記事の再要約
 
 初回実行で Gemini モデル未設定などにより RSS フォールバックになった行（タグ `要約未処理`、または 重要度3＋業界動向）は、次で再処理できます。

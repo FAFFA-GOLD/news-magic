@@ -13,8 +13,10 @@ from ai_news.digest import build_digest_markdown, digest_title, post_digest_webh
 from ai_news.feeds import collect_recent_entries
 from ai_news.gemini_models import GeminiRuntime, GeminiSetupError, LlmClientError, LlmProbeState, prepare_gemini
 from ai_news.llm import analyze_article, tags_for_storage
+from ai_news.digest_blocks import build_notion_digest_blocks
 from ai_news.notion_store import (
     SavedArticle,
+    cleanup_article_text_in_notion,
     notion_client_from_settings,
     publish_digest,
     save_to_notion,
@@ -201,7 +203,7 @@ def run_collect(settings: Settings) -> int:
         notion.upsert_digest_page(
             parent_page_id=settings.notion_parent_page_id,
             title=digest_title(),
-            markdown_body=digest_md,
+            blocks=build_notion_digest_blocks(saved),
         )
     post_digest_webhook(settings, digest_md)
 
@@ -274,7 +276,18 @@ def run_reanalyze(settings: Settings) -> int:
     return _finalize_exit(settings, stats)
 
 
+def run_cleanup_text(settings: Settings) -> int:
+    notion = notion_client_from_settings(settings)
+    if not notion:
+        print("[ERROR] cleanup-text requires Notion configuration")
+        return 1
+    cleanup_article_text_in_notion(notion, days=settings.notion_dedupe_days)
+    return 0
+
+
 def run(settings: Settings) -> int:
+    if settings.cleanup_text:
+        return run_cleanup_text(settings)
     if settings.reanalyze_fallback:
         return run_reanalyze(settings)
     return run_collect(settings)
@@ -292,10 +305,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Notion上の要約未処理行を Gemini で再要約しダイジェストを更新",
     )
+    parser.add_argument(
+        "--cleanup-text",
+        action="store_true",
+        help="Notion 既存行のタイトル/要約をクリーンアップ（LLM 不使用）",
+    )
     args = parser.parse_args(argv)
     settings = Settings.from_env(
         dry_run=args.dry_run,
         reanalyze_fallback=args.reanalyze_fallback,
+        cleanup_text=args.cleanup_text,
     )
     return run(settings)
 
