@@ -68,6 +68,18 @@ def _handle_client_error(
     return None
 
 
+def _log_llm_summary(settings: Settings, stats: RunStats, *, reanalyze: bool = False) -> None:
+    if not settings.llm_enabled or stats.llm_attempts == 0:
+        return
+    ok = stats.llm_attempts - stats.llm_failures
+    print(
+        f"[SUMMARY] LLM: {ok} succeeded, {stats.llm_failures} fell back to RSS "
+        f"(total {stats.llm_attempts})"
+    )
+    if reanalyze:
+        print(f"[SUMMARY] Reanalyze: {stats.reanalyzed} Notion rows updated")
+
+
 def _finalize_exit(settings: Settings, stats: RunStats) -> int:
     if settings.dry_run:
         return 0
@@ -193,6 +205,7 @@ def run_collect(settings: Settings) -> int:
         )
     post_digest_webhook(settings, digest_md)
 
+    _log_llm_summary(settings, stats)
     return _finalize_exit(settings, stats)
 
 
@@ -238,6 +251,7 @@ def run_reanalyze(settings: Settings) -> int:
 
             _record_llm(settings, stats, analysis)
             if analysis.used_fallback:
+                notion.update_article_page(row.page_id, analysis)
                 continue
             notion.update_article_page(row.page_id, analysis)
             stats.reanalyzed += 1
@@ -256,6 +270,7 @@ def run_reanalyze(settings: Settings) -> int:
     elif stats.reanalyzed == 0:
         print("[SKIP] Digest upsert skipped (0 rows re-analyzed)")
 
+    _log_llm_summary(settings, stats, reanalyze=True)
     return _finalize_exit(settings, stats)
 
 
