@@ -11,6 +11,7 @@ import requests
 from ai_news.config import CATEGORIES, Settings
 from ai_news.http_retry import request_with_retry
 from ai_news.llm import FALLBACK_TAG, ArticleAnalysis, tags_for_storage
+from ai_news.text_utils import normalize_stored_summary, normalize_stored_text
 
 NOTION_VERSION = "2022-06-28"
 NOTION_API = "https://api.notion.com/v1"
@@ -111,13 +112,34 @@ class NotionClient:
         tags = tags_for_storage(analysis)
         props: dict[str, Any] = {
             "要約": {
-                "rich_text": [{"text": {"content": analysis.summary_ja[:2000]}}],
+                "rich_text": [
+                    {"text": {"content": normalize_stored_summary(analysis.summary_ja)[:2000]}}
+                ],
             },
             "重要度": {"number": analysis.importance},
             "カテゴリ": {"select": {"name": analysis.category}},
             "タグ": {"multi_select": [{"name": t[:100]} for t in tags]},
         }
         self._request("PATCH", f"pages/{page_id.replace('-', '')}", json={"properties": props})
+
+    def patch_article_text(
+        self,
+        page_id: str,
+        *,
+        title: str,
+        summary_ja: str,
+    ) -> None:
+        props: dict[str, Any] = {
+            "タイトル": {"title": [{"text": {"content": title[:2000]}}]},
+            "要約": {
+                "rich_text": [{"text": {"content": summary_ja[:2000]}}],
+            },
+        }
+        self._request(
+            "PATCH",
+            f"pages/{page_id.replace('-', '')}",
+            json={"properties": props},
+        )
 
     def query_fallback_articles(self, *, days: int = 14) -> list[NotionArticleRow]:
         since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
@@ -193,7 +215,11 @@ class NotionClient:
         return rows
 
     def find_child_page_by_title(self, parent_page_id: str, title: str) -> str | None:
+        return self.resolve_digest_page_id(parent_page_id, title)
+
+    def resolve_digest_page_id(self, parent_page_id: str, title: str) -> str | None:
         parent = parent_page_id.replace("-", "")
+        matching: list[str] = []
         cursor: str | None = None
         while True:
             params: dict[str, Any] = {"page_size": 100}
@@ -207,39 +233,62 @@ class NotionClient:
                     block.get("child_page", {}).get("title")
                 )
                 if block_title == title:
-                    return block.get("id")
+                    bid = block.get("id")
+                    if bid:
+                        matching.append(bid)
             if not data.get("has_more"):
                 break
             cursor = data.get("next_cursor")
-        return None
+        if not matching:
+            return None
+        if len(matching) == 1:
+            return matching[0]
+
+        best_id = matching[0]
+        best_ts = ""
+        for pid in matching:
+            page = self._request("GET", f"pages/{pid}")
+            ts = page.get("last_edited_time", "")
+            if ts > best_ts:
+                best_ts = ts
+                best_id = pid
+        others = [pid for pid in matching if pid != best_id]
+        print(
+            f"[WARN] Duplicate digest pages titled {title!r}: "
+            f"updating {best_id}; also found {others}"
+        )
+        return best_id
 
     def upsert_digest_page(
         self,
         *,
         parent_page_id: str,
         title: str,
-        markdown_body: str,
+        blocks: list[dict[str, Any]],
     ) -> str | None:
-        page_id = self.find_child_page_by_title(parent_page_id, title)
-        children = _markdown_to_blocks(markdown_body)[:100]
+        page_id = self.resolve_digest_page_id(parent_page_id, title)
         if page_id:
             self._clear_block_children(page_id)
-            if children:
-                self._append_block_children(page_id, children)
+            if blocks:
+                self._append_block_children(page_id, blocks)
             print(f"Notion digest page updated: {title}")
             return page_id
 
         parent = parent_page_id.replace("-", "")
+        initial = blocks[:100]
         payload: dict[str, Any] = {
             "parent": {"page_id": parent},
             "properties": {
                 "title": {"title": [{"text": {"content": title[:2000]}}]},
             },
-            "children": children,
+            "children": initial,
         }
         data = self._request("POST", "pages", json=payload)
+        page_id = data.get("id")
+        if page_id and len(blocks) > 100:
+            self._append_block_children(page_id, blocks[100:])
         print(f"Notion digest page created: {title}")
-        return data.get("id")
+        return page_id
 
     def _clear_block_children(self, block_id: str) -> None:
         cursor: str | None = None
@@ -284,11 +333,13 @@ def save_to_notion(
 
     fetched_at = datetime.now(timezone.utc)
     tags = tags_for_storage(analysis)
+    title = normalize_stored_text(title, source=source)
+    summary_ja = normalize_stored_summary(analysis.summary_ja)
     article = SavedArticle(
         source=source,
         url=url,
         title=title,
-        summary_ja=analysis.summary_ja,
+        summary_ja=summary_ja,
         importance=analysis.importance,
         category=analysis.category,
         tags=tags,
@@ -309,10 +360,12 @@ def publish_digest(
     from_notion_hours: int | None = None,
 ) -> None:
     from ai_news.digest import build_digest_markdown, digest_title
+    from ai_news.digest_blocks import build_notion_digest_blocks
 
     if from_notion_hours is not None:
         articles = client.query_articles_since_hours(from_notion_hours)
     digest_md = build_digest_markdown(articles)
+    blocks = build_notion_digest_blocks(articles)
     print("\n" + "=" * 60)
     print(digest_md)
     print("=" * 60)
@@ -325,12 +378,38 @@ def publish_digest(
         client.upsert_digest_page(
             parent_page_id=settings.notion_parent_page_id,
             title=title,
-            markdown_body=digest_md,
+            blocks=blocks,
         )
 
     from ai_news.digest import post_digest_webhook
 
     post_digest_webhook(settings, digest_md)
+
+
+def cleanup_article_text_in_notion(
+    client: NotionClient,
+    *,
+    days: int,
+) -> int:
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+    rows = client._query_all_articles(
+        {"property": "取得日", "date": {"on_or_after": since}}
+    )
+    updated = 0
+    for row in rows:
+        new_title = normalize_stored_text(row.title, source=row.source)
+        new_summary = normalize_stored_summary(row.summary_ja)
+        if new_title == row.title and new_summary == row.summary_ja:
+            continue
+        client.patch_article_text(
+            row.page_id,
+            title=new_title,
+            summary_ja=new_summary,
+        )
+        updated += 1
+        print(f"Text cleanup: {row.title[:40]!r} -> {new_title[:40]!r}")
+    print(f"[SUMMARY] Text cleanup: {updated} rows updated")
+    return updated
 
 
 def _article_properties(
@@ -367,29 +446,6 @@ def _date_iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%d")
 
 
-def _markdown_to_blocks(markdown_body: str) -> list[dict[str, Any]]:
-    blocks: list[dict[str, Any]] = []
-    chunk = ""
-    for line in markdown_body.splitlines():
-        chunk += line + "\n"
-        if len(chunk) > 1800:
-            blocks.append(_paragraph_block(chunk))
-            chunk = ""
-    if chunk.strip():
-        blocks.append(_paragraph_block(chunk))
-    return blocks
-
-
-def _paragraph_block(text: str) -> dict[str, Any]:
-    return {
-        "object": "block",
-        "type": "paragraph",
-        "paragraph": {
-            "rich_text": [{"type": "text", "text": {"content": text[:2000]}}],
-        },
-    }
-
-
 def parse_child_page_title(title_field: Any) -> str:
     """Notion child_page.title may be a plain string or rich_text array."""
     if title_field is None:
@@ -415,10 +471,8 @@ def is_fallback_candidate(
     importance: int,
     category: str,
 ) -> bool:
-    """True if row should be re-analyzed (tag marker or legacy 3 + 業界動向)."""
-    if FALLBACK_TAG in tags:
-        return True
-    return importance == 3 and category == "業界動向"
+    """True if row should be re-analyzed (タグ 要約未処理 のみ)."""
+    return FALLBACK_TAG in tags
 
 
 def _prop_url(properties: dict[str, Any]) -> str | None:

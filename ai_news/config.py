@@ -47,6 +47,7 @@ class Settings:
     feeds_path: Path
     dry_run: bool
     reanalyze_fallback: bool
+    cleanup_text: bool
     hours_window: int
     max_entries_per_feed: int
     gemini_api_key: str | None
@@ -69,12 +70,15 @@ class Settings:
         *,
         dry_run: bool = False,
         reanalyze_fallback: bool = False,
+        cleanup_text: bool = False,
     ) -> Settings:
         return cls(
             feeds_path=Path(_env_str("FEEDS_PATH", str(DEFAULT_FEEDS_PATH))),
             dry_run=dry_run or _env_str("DRY_RUN", "").lower() in ("1", "true", "yes"),
             reanalyze_fallback=reanalyze_fallback
             or _env_str("REANALYZE_FALLBACK", "").lower() in ("1", "true", "yes"),
+            cleanup_text=cleanup_text
+            or _env_str("CLEANUP_TEXT", "").lower() in ("1", "true", "yes"),
             hours_window=int(_env_str("HOURS_WINDOW", "24")),
             max_entries_per_feed=int(_env_str("MAX_ENTRIES_PER_FEED", "25")),
             gemini_api_key=_env_optional("GEMINI_API_KEY"),
