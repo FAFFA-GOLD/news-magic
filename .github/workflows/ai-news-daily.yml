@@ -4,12 +4,17 @@ on:
   schedule:
     # 06:30 JST = 21:30 UTC (前日)
     - cron: "30 21 * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      reanalyze_fallback:
+        description: Notion の要約未処理行を再要約してダイジェストを更新
+        type: boolean
+        default: false
 
 jobs:
   collect_and_digest:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
 
     steps:
       - name: Checkout repository
@@ -29,6 +34,7 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL }}
+          GEMINI_PACE_SECONDS: ${{ vars.GEMINI_PACE_SECONDS }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL }}
           OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
@@ -36,6 +42,9 @@ jobs:
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
           NOTION_PARENT_PAGE_ID: ${{ secrets.NOTION_PARENT_PAGE_ID }}
           DIGEST_WEBHOOK_URL: ${{ secrets.DIGEST_WEBHOOK_URL }}
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-        run: python -m ai_news.pipeline
+        run: |
+          ARGS=""
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.reanalyze_fallback }}" = "true" ]; then
+            ARGS="--reanalyze-fallback"
+          fi
+          python -m ai_news.pipeline $ARGS

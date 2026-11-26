@@ -9,6 +9,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_FEEDS_PATH = REPO_ROOT / "feeds.yaml"
 
+DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
+DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
+
 CATEGORIES = [
     "新モデル",
     "ツール・サービス",
@@ -22,14 +26,30 @@ CONTENT_MAX_CHARS = 6000
 SUMMARY_INPUT_MAX_CHARS = 4000
 
 
+def _env_str(key: str, default: str) -> str:
+    value = os.environ.get(key)
+    if value is None or not str(value).strip():
+        return default
+    return str(value).strip()
+
+
+def _env_optional(key: str) -> str | None:
+    value = os.environ.get(key)
+    if value is None or not str(value).strip():
+        return None
+    return str(value).strip()
+
+
 @dataclass(frozen=True)
 class Settings:
     feeds_path: Path
     dry_run: bool
+    reanalyze_fallback: bool
     hours_window: int
     max_entries_per_feed: int
     gemini_api_key: str | None
     gemini_model: str
+    gemini_pace_seconds: float
     openai_api_key: str | None
     openai_base_url: str
     openai_model: str
@@ -37,30 +57,35 @@ class Settings:
     notion_database_id: str | None
     notion_parent_page_id: str | None
     digest_webhook_url: str | None
-    supabase_url: str | None
-    supabase_service_role_key: str | None
+    notion_dedupe_days: int
 
     @classmethod
-    def from_env(cls, *, dry_run: bool = False) -> Settings:
+    def from_env(
+        cls,
+        *,
+        dry_run: bool = False,
+        reanalyze_fallback: bool = False,
+    ) -> Settings:
         return cls(
-            feeds_path=Path(os.environ.get("FEEDS_PATH", str(DEFAULT_FEEDS_PATH))),
-            dry_run=dry_run or os.environ.get("DRY_RUN", "").lower() in ("1", "true", "yes"),
-            hours_window=int(os.environ.get("HOURS_WINDOW", "24")),
-            max_entries_per_feed=int(os.environ.get("MAX_ENTRIES_PER_FEED", "25")),
-            gemini_api_key=os.environ.get("GEMINI_API_KEY") or None,
-            gemini_model=os.environ.get("GEMINI_MODEL", "gemini-2.0-flash"),
-            openai_api_key=os.environ.get("OPENAI_API_KEY") or None,
-            openai_base_url=os.environ.get(
-                "OPENAI_BASE_URL", "https://api.openai.com/v1"
-            ).rstrip("/"),
-            openai_model=os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
-            notion_token=os.environ.get("NOTION_TOKEN") or None,
-            notion_database_id=os.environ.get("NOTION_DATABASE_ID") or None,
-            notion_parent_page_id=os.environ.get("NOTION_PARENT_PAGE_ID") or None,
-            digest_webhook_url=os.environ.get("DIGEST_WEBHOOK_URL") or None,
-            supabase_url=os.environ.get("SUPABASE_URL") or None,
-            supabase_service_role_key=os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
-            or None,
+            feeds_path=Path(_env_str("FEEDS_PATH", str(DEFAULT_FEEDS_PATH))),
+            dry_run=dry_run or _env_str("DRY_RUN", "").lower() in ("1", "true", "yes"),
+            reanalyze_fallback=reanalyze_fallback
+            or _env_str("REANALYZE_FALLBACK", "").lower() in ("1", "true", "yes"),
+            hours_window=int(_env_str("HOURS_WINDOW", "24")),
+            max_entries_per_feed=int(_env_str("MAX_ENTRIES_PER_FEED", "25")),
+            gemini_api_key=_env_optional("GEMINI_API_KEY"),
+            gemini_model=_env_str("GEMINI_MODEL", DEFAULT_GEMINI_MODEL),
+            gemini_pace_seconds=float(_env_str("GEMINI_PACE_SECONDS", "4.0")),
+            openai_api_key=_env_optional("OPENAI_API_KEY"),
+            openai_base_url=_env_str("OPENAI_BASE_URL", DEFAULT_OPENAI_BASE_URL).rstrip(
+                "/"
+            ),
+            openai_model=_env_str("OPENAI_MODEL", DEFAULT_OPENAI_MODEL),
+            notion_token=_env_optional("NOTION_TOKEN"),
+            notion_database_id=_env_optional("NOTION_DATABASE_ID"),
+            notion_parent_page_id=_env_optional("NOTION_PARENT_PAGE_ID"),
+            digest_webhook_url=_env_optional("DIGEST_WEBHOOK_URL"),
+            notion_dedupe_days=int(_env_str("NOTION_DEDUPE_DAYS", "14")),
         )
 
     @property
@@ -70,7 +95,3 @@ class Settings:
     @property
     def notion_enabled(self) -> bool:
         return bool(self.notion_token and self.notion_database_id)
-
-    @property
-    def supabase_enabled(self) -> bool:
-        return bool(self.supabase_url and self.supabase_service_role_key)

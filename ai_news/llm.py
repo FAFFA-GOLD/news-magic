@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass
 
 import requests
 
 from ai_news.config import CATEGORIES, Settings, SUMMARY_INPUT_MAX_CHARS
+from ai_news.http_retry import request_with_retry
+
+FALLBACK_TAG = "要約未処理"
+
+_gemini_last_call: float = 0.0
 
 
 @dataclass
@@ -17,6 +23,7 @@ class ArticleAnalysis:
     importance: int
     category: str
     tags: list[str]
+    used_fallback: bool = False
 
 
 SYSTEM_HINT = """あなたはAI業界ニュースの編集者です。記事を日本語で要約し、JSONのみを返してください。
@@ -30,6 +37,13 @@ USER_TEMPLATE = """タイトル: {title}
 
 次のJSON形式のみで回答:
 {{"summary_ja": "2〜4文の日本語要約", "importance": 3, "category": "業界動向", "tags": ["タグ1"]}}"""
+
+
+def tags_for_storage(analysis: ArticleAnalysis) -> list[str]:
+    tags = [t for t in analysis.tags if t != FALLBACK_TAG]
+    if analysis.used_fallback and FALLBACK_TAG not in tags:
+        tags.append(FALLBACK_TAG)
+    return tags[:10]
 
 
 def _clamp_importance(value: int) -> int:
@@ -64,7 +78,8 @@ def _fallback_analysis(title: str, rss_summary: str | None) -> ArticleAnalysis:
         summary_ja=summary,
         importance=3,
         category="業界動向",
-        tags=[],
+        tags=[FALLBACK_TAG],
+        used_fallback=True,
     )
 
 
@@ -91,19 +106,35 @@ def analyze_article(
             data = _gemini_generate(settings, system, prompt)
         else:
             data = _openai_compatible_generate(settings, system, prompt)
+        summary = str(data.get("summary_ja") or "").strip()
+        if not summary:
+            raise ValueError("empty summary_ja from LLM")
+        tags = [str(t) for t in (data.get("tags") or []) if str(t) != FALLBACK_TAG][:5]
         return ArticleAnalysis(
-            summary_ja=str(data.get("summary_ja") or "").strip()
-            or _fallback_analysis(title, rss_summary).summary_ja,
+            summary_ja=summary,
             importance=_clamp_importance(int(data.get("importance", 3))),
             category=_normalize_category(str(data.get("category", "業界動向"))),
-            tags=[str(t) for t in (data.get("tags") or [])][:5],
+            tags=tags,
+            used_fallback=False,
         )
     except Exception as exc:
         print(f"[WARN] LLM summarization failed ({exc!r}); using RSS fallback")
         return _fallback_analysis(title, rss_summary)
 
 
+def _pace_gemini(settings: Settings) -> None:
+    global _gemini_last_call
+    if settings.gemini_pace_seconds <= 0:
+        return
+    now = time.monotonic()
+    elapsed = now - _gemini_last_call
+    if _gemini_last_call > 0 and elapsed < settings.gemini_pace_seconds:
+        time.sleep(settings.gemini_pace_seconds - elapsed)
+    _gemini_last_call = time.monotonic()
+
+
 def _gemini_generate(settings: Settings, system: str, user: str) -> dict:
+    _pace_gemini(settings)
     model = settings.gemini_model
     url = (
         f"https://generativelanguage.googleapis.com/v1beta/models/"
@@ -122,7 +153,8 @@ def _gemini_generate(settings: Settings, system: str, user: str) -> dict:
             "responseMimeType": "application/json",
         },
     }
-    resp = requests.post(url, json=payload, timeout=60)
+    session = requests.Session()
+    resp = request_with_retry(session, "POST", url, json=payload, timeout=90)
     resp.raise_for_status()
     body = resp.json()
     text = (
@@ -150,7 +182,8 @@ def _openai_compatible_generate(settings: Settings, system: str, user: str) -> d
             {"role": "user", "content": user},
         ],
     }
-    resp = requests.post(url, headers=headers, json=payload, timeout=60)
+    session = requests.Session()
+    resp = request_with_retry(session, "POST", url, headers=headers, json=payload, timeout=90)
     resp.raise_for_status()
     text = resp.json()["choices"][0]["message"]["content"]
     return _parse_json_response(text)

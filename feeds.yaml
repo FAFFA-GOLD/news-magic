@@ -47,8 +47,6 @@ feeds:
   # --- ニュースレター・キュレーション ---
   - source: The Rundown AI
     url: https://www.therundown.ai/feed
-  - source: Import AI
-    url: https://importai.substack.com/feed
   - source: Simon Willison (AI)
     url: https://simonwillison.net/tags/ai.atom
   - source: SemiAnalysis
