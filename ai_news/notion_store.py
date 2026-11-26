@@ -58,6 +58,11 @@ class NotionClient:
     def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         url = f"{NOTION_API}/{path.lstrip('/')}"
         resp = request_with_retry(self.session, method, url, **kwargs)
+        if not resp.ok:
+            body = resp.text[:8000] if resp.text else "(empty body)"
+            print(
+                f"[ERROR] Notion HTTP {resp.status_code} {method} {path}: {body}"
+            )
         resp.raise_for_status()
         return resp.json()
 
@@ -116,32 +121,26 @@ class NotionClient:
 
     def query_fallback_articles(self, *, days: int = 14) -> list[NotionArticleRow]:
         since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
-        filter_body = {
-            "and": [
-                {
-                    "property": "取得日",
-                    "date": {"on_or_after": since},
-                },
-                {
-                    "or": [
-                        {
-                            "property": "タグ",
-                            "multi_select": {"contains": FALLBACK_TAG},
-                        },
-                        {
-                            "and": [
-                                {"property": "重要度", "number": {"equals": 3}},
-                                {
-                                    "property": "カテゴリ",
-                                    "select": {"equals": "業界動向"},
-                                },
-                            ],
-                        },
-                    ],
-                },
-            ]
+        # Notion allows at most 2 filter nesting levels; fallback rules are applied in Python.
+        filter_body: dict[str, Any] = {
+            "property": "取得日",
+            "date": {"on_or_after": since},
         }
-        return self._query_all_articles(filter_body)
+        all_rows = self._query_all_articles(filter_body)
+        candidates = [
+            row
+            for row in all_rows
+            if is_fallback_candidate(
+                tags=row.tags,
+                importance=row.importance,
+                category=row.category,
+            )
+        ]
+        print(
+            f"Notion fallback candidates: {len(candidates)} / {len(all_rows)} "
+            f"(取得日 >= {since})"
+        )
+        return candidates
 
     def query_articles_since_hours(self, hours: int) -> list[SavedArticle]:
         since_dt = datetime.now(timezone.utc) - timedelta(hours=hours)
@@ -395,6 +394,18 @@ def _plain_text(rich: list[dict[str, Any]]) -> str:
         if isinstance(item, dict):
             parts.append(item.get("plain_text") or item.get("text", {}).get("content", ""))
     return "".join(parts)
+
+
+def is_fallback_candidate(
+    *,
+    tags: list[str],
+    importance: int,
+    category: str,
+) -> bool:
+    """True if row should be re-analyzed (tag marker or legacy 3 + 業界動向)."""
+    if FALLBACK_TAG in tags:
+        return True
+    return importance == 3 and category == "業界動向"
 
 
 def _prop_url(properties: dict[str, Any]) -> str | None:
