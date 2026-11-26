@@ -19,6 +19,7 @@ RSS から AI 関連ニュースを毎朝集め、**日本語要約付き**で N
 2. GitHub リポジトリの **Settings → Secrets → Actions** に `GEMINI_API_KEY` を登録
 
 `GEMINI_MODEL` 未設定時は起動時に **ListModels API で利用可能な flash モデルを自動選択**します（設定時はその ID を使用。404 時は 1 回だけ再選択）。空の Repository Variable は未設定扱いです。
+Gemini は **responseSchema** で JSON を強制し、`maxOutputTokens` 既定 8192。思考モデルは `thinkingBudget` を抑えて出力枠を確保します。
 Gemini 呼び出しは既定で **4 秒間隔**（`GEMINI_PACE_SECONDS`、無料枠の RPM 対策）。
 
 ### 2. Notion インテグレーション

@@ -24,7 +24,8 @@ CATEGORIES = [
 ]
 
 CONTENT_MAX_CHARS = 6000
-SUMMARY_INPUT_MAX_CHARS = 4000
+SUMMARY_INPUT_MAX_CHARS = 2800
+DEFAULT_GEMINI_MAX_OUTPUT_TOKENS = 8192
 
 
 def _env_str(key: str, default: str) -> str:
@@ -51,6 +52,8 @@ class Settings:
     gemini_api_key: str | None
     gemini_model: str | None
     gemini_pace_seconds: float
+    gemini_max_output_tokens: int
+    gemini_summary_input_max_chars: int
     openai_api_key: str | None
     openai_base_url: str
     openai_model: str
@@ -77,6 +80,12 @@ class Settings:
             gemini_api_key=_env_optional("GEMINI_API_KEY"),
             gemini_model=_env_optional("GEMINI_MODEL"),
             gemini_pace_seconds=float(_env_str("GEMINI_PACE_SECONDS", "4.0")),
+            gemini_max_output_tokens=int(
+                _env_str("GEMINI_MAX_OUTPUT_TOKENS", str(DEFAULT_GEMINI_MAX_OUTPUT_TOKENS))
+            ),
+            gemini_summary_input_max_chars=int(
+                _env_str("GEMINI_SUMMARY_INPUT_MAX_CHARS", str(SUMMARY_INPUT_MAX_CHARS))
+            ),
             openai_api_key=_env_optional("OPENAI_API_KEY"),
             openai_base_url=_env_str("OPENAI_BASE_URL", DEFAULT_OPENAI_BASE_URL).rstrip(
                 "/"
