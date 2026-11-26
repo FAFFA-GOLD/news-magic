@@ -9,7 +9,7 @@ RSS から AI 関連ニュースを毎朝集め、**日本語要約付き**で N
 - Notion データベースへ URL 重複なしで保存
 - 直近 24 時間分をカテゴリ別・重要度順にまとめた **AIダイジェスト YYYY-MM-DD** を Notion ページとして作成
 - （任意）Slack / Discord などへ `DIGEST_WEBHOOK_URL` で投稿
-- （任意）従来どおり Supabase `articles` テーブルへもミラー
+- LLM 失敗時はタグ **要約未処理** を付与し、後から `--reanalyze-fallback` で再要約可能
 
 ## クイックスタート
 
@@ -18,7 +18,8 @@ RSS から AI 関連ニュースを毎朝集め、**日本語要約付き**で N
 1. [Google AI Studio](https://aistudio.google.com/apikey) で API キーを発行
 2. GitHub リポジトリの **Settings → Secrets → Actions** に `GEMINI_API_KEY` を登録
 
-デフォルトモデルは `gemini-2.0-flash`（環境変数 `GEMINI_MODEL` で変更可）。
+デフォルトモデルは `gemini-2.5-flash`（環境変数 `GEMINI_MODEL` で変更可。空の Repository Variable は無視されます）。
+Gemini 呼び出しは既定で **4 秒間隔**（`GEMINI_PACE_SECONDS`、無料枠の RPM 対策）。
 
 ### 2. Notion インテグレーション
 
@@ -60,10 +61,9 @@ python setup_notion_db.py
 | `NOTION_PARENT_PAGE_ID` | 推奨 | ダイジェストページの親 |
 | `OPENAI_API_KEY` | 任意 | Gemini が無い場合の互換 API（xAI 等は `OPENAI_BASE_URL` / `OPENAI_MODEL` も） |
 | `DIGEST_WEBHOOK_URL` | 任意 | Slack incoming webhook 等 |
-| `SUPABASE_URL` | 任意 | 従来 DB を使う場合のみ |
-| `SUPABASE_SERVICE_ROLE_KEY` | 任意 | 同上 |
 
-Repository **Variables**（任意）: `GEMINI_MODEL`, `OPENAI_BASE_URL`, `OPENAI_MODEL`
+Repository **Variables**（任意）: `GEMINI_MODEL`, `GEMINI_PACE_SECONDS`, `OPENAI_BASE_URL`, `OPENAI_MODEL`  
+未設定・空文字の Variable はコード側のデフォルトが使われます。
 
 ### 4. ローカル dry-run（キー不要）
 
@@ -87,8 +87,19 @@ python scripts/verify_feeds.py
 ワークフロー: `.github/workflows/ai-news-daily.yml`
 
 - **スケジュール**: 毎日 21:30 UTC（**06:30 JST**）
-- **手動実行**: `workflow_dispatch`
+- **手動実行**: `workflow_dispatch`（`reanalyze_fallback=true` で要約未処理行の再要約＋当日ダイジェスト更新）
 - **Python**: 3.12
+- **失敗時**: 候補があるのに 0 件保存、または LLM がほぼ全件失敗した場合は exit code 1
+
+### フォールバック記事の再要約
+
+初回実行で Gemini モデル未設定などにより RSS フォールバックになった行（タグ `要約未処理`、または 重要度3＋業界動向）は、次で再処理できます。
+
+```bash
+python -m ai_news.pipeline --reanalyze-fallback
+```
+
+GitHub Actions では **Run workflow** → `reanalyze_fallback` にチェック。
 
 ## コストの目安
 
@@ -117,6 +128,7 @@ scripts/verify_feeds.py # フィード死活確認
 - hnrss の複雑なクエリは 502 になることがあり → シンプルなクエリに変更済み
 - GIGAZINE RSS（0 件・パース失敗）
 - VentureBeat（429 レート制限）
+- Import AI Substack（403）
 
 ## ライセンス
 

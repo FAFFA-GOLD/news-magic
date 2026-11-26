@@ -12,6 +12,7 @@ import requests
 import yaml
 
 from ai_news.config import Settings
+from ai_news.text_utils import clean_rss_text
 
 
 @dataclass
@@ -51,8 +52,7 @@ def strip_html_snippet(html: str | None) -> str | None:
     import re
 
     text = re.sub(r"<[^>]+>", " ", html)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text or None
+    return clean_rss_text(text)
 
 
 def fetch_feed_entries(
@@ -93,7 +93,7 @@ def fetch_feed_entries(
             FeedEntry(
                 source=source,
                 url=link.strip(),
-                title=title.strip(),
+                title=clean_rss_text(title.strip()) or title.strip(),
                 rss_summary=summary,
                 published_at=published,
             )
