@@ -11,6 +11,7 @@ from ai_news.config import Settings
 from ai_news.content import fetch_article_content
 from ai_news.digest import build_digest_markdown, digest_title, post_digest_webhook
 from ai_news.feeds import collect_recent_entries
+from ai_news.gemini_models import GeminiRuntime, GeminiSetupError, LlmClientError, LlmProbeState, prepare_gemini
 from ai_news.llm import analyze_article, tags_for_storage
 from ai_news.notion_store import (
     SavedArticle,
@@ -29,12 +30,42 @@ class RunStats:
     reanalyzed: int = 0
 
 
+def _init_gemini(
+    settings: Settings,
+) -> tuple[GeminiRuntime | None, LlmProbeState | None] | int:
+    if not settings.gemini_api_key or settings.dry_run:
+        return None, None
+    try:
+        gemini = prepare_gemini(settings)
+    except GeminiSetupError as exc:
+        print(f"[ERROR] Gemini setup failed: {exc}")
+        return 1
+    return gemini, LlmProbeState()
+
+
 def _record_llm(settings: Settings, stats: RunStats, analysis) -> None:
     if not settings.llm_enabled:
         return
     stats.llm_attempts += 1
     if analysis.used_fallback:
         stats.llm_failures += 1
+
+
+def _handle_client_error(
+    settings: Settings,
+    stats: RunStats,
+    probe: LlmProbeState | None,
+    exc: LlmClientError,
+) -> int | None:
+    print(f"[WARN] LLM client error {exc.status_code}")
+    stats.llm_attempts += 1
+    stats.llm_failures += 1
+    if probe:
+        probe.record_client_error()
+        if probe.should_abort():
+            print("[ERROR] First LLM calls failed with 4xx; aborting early")
+            return 1
+    return None
 
 
 def _finalize_exit(settings: Settings, stats: RunStats) -> int:
@@ -69,6 +100,11 @@ def _finalize_exit(settings: Settings, stats: RunStats) -> int:
 
 def run_collect(settings: Settings) -> int:
     stats = RunStats()
+    init = _init_gemini(settings)
+    if init == 1:
+        return 1
+    gemini, probe = init
+
     entries = collect_recent_entries(settings)
     stats.candidates = len(entries)
     print(f"Collected {len(entries)} candidate entries in window")
@@ -91,13 +127,22 @@ def run_collect(settings: Settings) -> int:
                 body = fetch_article_content(entry.url)
             text_for_llm = body or entry.rss_summary or entry.title
 
-            analysis = analyze_article(
-                settings=settings,
-                title=entry.title,
-                source=entry.source,
-                body_text=text_for_llm,
-                rss_summary=entry.rss_summary,
-            )
+            try:
+                analysis = analyze_article(
+                    settings=settings,
+                    title=entry.title,
+                    source=entry.source,
+                    body_text=text_for_llm,
+                    rss_summary=entry.rss_summary,
+                    gemini=gemini,
+                    probe=probe,
+                )
+            except LlmClientError as exc:
+                early = _handle_client_error(settings, stats, probe, exc)
+                if early is not None:
+                    return early
+                continue
+
             _record_llm(settings, stats, analysis)
 
             if settings.dry_run:
@@ -153,6 +198,11 @@ def run_collect(settings: Settings) -> int:
 
 def run_reanalyze(settings: Settings) -> int:
     stats = RunStats()
+    init = _init_gemini(settings)
+    if init == 1:
+        return 1
+    gemini, probe = init
+
     notion = notion_client_from_settings(settings)
     if not notion:
         print("[ERROR] reanalyze requires Notion configuration")
@@ -170,13 +220,22 @@ def run_reanalyze(settings: Settings) -> int:
         try:
             body = fetch_article_content(row.url)
             text = body or row.summary_ja or row.title
-            analysis = analyze_article(
-                settings=settings,
-                title=row.title,
-                source=row.source or "再分析",
-                body_text=text,
-                rss_summary=row.summary_ja,
-            )
+            try:
+                analysis = analyze_article(
+                    settings=settings,
+                    title=row.title,
+                    source=row.source or "再分析",
+                    body_text=text,
+                    rss_summary=row.summary_ja,
+                    gemini=gemini,
+                    probe=probe,
+                )
+            except LlmClientError as exc:
+                early = _handle_client_error(settings, stats, probe, exc)
+                if early is not None:
+                    return early
+                continue
+
             _record_llm(settings, stats, analysis)
             if analysis.used_fallback:
                 continue
@@ -187,20 +246,15 @@ def run_reanalyze(settings: Settings) -> int:
         except Exception as exc:
             print(f"[ERROR] reanalyze {row.url}: {exc!r}")
 
-    if settings.notion_parent_page_id:
+    if stats.reanalyzed > 0 and settings.notion_parent_page_id:
         publish_digest(
             settings,
             notion,
             [],
             from_notion_hours=settings.hours_window,
         )
-    else:
-        articles = notion.query_articles_since_hours(settings.hours_window)
-        digest_md = build_digest_markdown(articles)
-        print("\n" + "=" * 60)
-        print(digest_md)
-        print("=" * 60)
-        post_digest_webhook(settings, digest_md)
+    elif stats.reanalyzed == 0:
+        print("[SKIP] Digest upsert skipped (0 rows re-analyzed)")
 
     return _finalize_exit(settings, stats)
 

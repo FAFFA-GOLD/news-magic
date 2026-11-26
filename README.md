@@ -18,7 +18,7 @@ RSS から AI 関連ニュースを毎朝集め、**日本語要約付き**で N
 1. [Google AI Studio](https://aistudio.google.com/apikey) で API キーを発行
 2. GitHub リポジトリの **Settings → Secrets → Actions** に `GEMINI_API_KEY` を登録
 
-デフォルトモデルは `gemini-2.5-flash`（環境変数 `GEMINI_MODEL` で変更可。空の Repository Variable は無視されます）。
+`GEMINI_MODEL` 未設定時は起動時に **ListModels API で利用可能な flash モデルを自動選択**します（設定時はその ID を使用。404 時は 1 回だけ再選択）。空の Repository Variable は未設定扱いです。
 Gemini 呼び出しは既定で **4 秒間隔**（`GEMINI_PACE_SECONDS`、無料枠の RPM 対策）。
 
 ### 2. Notion インテグレーション

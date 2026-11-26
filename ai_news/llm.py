@@ -10,6 +10,12 @@ from dataclasses import dataclass
 import requests
 
 from ai_news.config import CATEGORIES, Settings, SUMMARY_INPUT_MAX_CHARS
+from ai_news.gemini_models import (
+    GeminiRuntime,
+    LlmClientError,
+    LlmProbeState,
+    reselect_after_404,
+)
 from ai_news.http_retry import request_with_retry
 
 FALLBACK_TAG = "要約未処理"
@@ -90,6 +96,8 @@ def analyze_article(
     source: str,
     body_text: str,
     rss_summary: str | None,
+    gemini: GeminiRuntime | None = None,
+    probe: LlmProbeState | None = None,
 ) -> ArticleAnalysis:
     if not settings.llm_enabled:
         return _fallback_analysis(title, rss_summary)
@@ -103,13 +111,17 @@ def analyze_article(
 
     try:
         if settings.gemini_api_key:
-            data = _gemini_generate(settings, system, prompt)
+            if gemini is None:
+                raise ValueError("GeminiRuntime is required when GEMINI_API_KEY is set")
+            data = _gemini_generate(settings, gemini, system, prompt)
         else:
             data = _openai_compatible_generate(settings, system, prompt)
         summary = str(data.get("summary_ja") or "").strip()
         if not summary:
             raise ValueError("empty summary_ja from LLM")
         tags = [str(t) for t in (data.get("tags") or []) if str(t) != FALLBACK_TAG][:5]
+        if probe:
+            probe.record_success()
         return ArticleAnalysis(
             summary_ja=summary,
             importance=_clamp_importance(int(data.get("importance", 3))),
@@ -117,6 +129,10 @@ def analyze_article(
             tags=tags,
             used_fallback=False,
         )
+    except LlmClientError:
+        if probe:
+            probe.record_client_error()
+        raise
     except Exception as exc:
         print(f"[WARN] LLM summarization failed ({exc!r}); using RSS fallback")
         return _fallback_analysis(title, rss_summary)
@@ -133,37 +149,53 @@ def _pace_gemini(settings: Settings) -> None:
     _gemini_last_call = time.monotonic()
 
 
-def _gemini_generate(settings: Settings, system: str, user: str) -> dict:
-    _pace_gemini(settings)
-    model = settings.gemini_model
-    url = (
-        f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{model}:generateContent?key={settings.gemini_api_key}"
-    )
-    payload = {
-        "contents": [
-            {
-                "role": "user",
-                "parts": [{"text": f"{system}\n\n{user}"}],
-            }
-        ],
-        "generationConfig": {
-            "temperature": 0.3,
-            "maxOutputTokens": 512,
-            "responseMimeType": "application/json",
-        },
-    }
-    session = requests.Session()
-    resp = request_with_retry(session, "POST", url, json=payload, timeout=90)
-    resp.raise_for_status()
-    body = resp.json()
-    text = (
-        body.get("candidates", [{}])[0]
-        .get("content", {})
-        .get("parts", [{}])[0]
-        .get("text", "")
-    )
-    return _parse_json_response(text)
+def _gemini_generate(
+    settings: Settings,
+    gemini: GeminiRuntime,
+    system: str,
+    user: str,
+) -> dict:
+    last_error: LlmClientError | None = None
+    for _ in range(2):
+        _pace_gemini(settings)
+        model = gemini.resolved_model
+        url = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{model}:generateContent?key={gemini.api_key}"
+        )
+        payload = {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": f"{system}\n\n{user}"}],
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0.3,
+                "maxOutputTokens": 512,
+                "responseMimeType": "application/json",
+            },
+        }
+        session = requests.Session()
+        resp = request_with_retry(session, "POST", url, json=payload, timeout=90)
+        if resp.status_code == 404:
+            if reselect_after_404(gemini):
+                last_error = LlmClientError(404, resp.text)
+                continue
+        if 400 <= resp.status_code < 500 and resp.status_code != 429:
+            raise LlmClientError(resp.status_code, resp.text[:2000])
+        resp.raise_for_status()
+        body = resp.json()
+        text = (
+            body.get("candidates", [{}])[0]
+            .get("content", {})
+            .get("parts", [{}])[0]
+            .get("text", "")
+        )
+        return _parse_json_response(text)
+    if last_error:
+        raise last_error
+    raise LlmClientError(404, "Gemini model not found after re-select")
 
 
 def _openai_compatible_generate(settings: Settings, system: str, user: str) -> dict:
@@ -184,6 +216,8 @@ def _openai_compatible_generate(settings: Settings, system: str, user: str) -> d
     }
     session = requests.Session()
     resp = request_with_retry(session, "POST", url, headers=headers, json=payload, timeout=90)
+    if 400 <= resp.status_code < 500 and resp.status_code != 429:
+        raise LlmClientError(resp.status_code, resp.text[:2000])
     resp.raise_for_status()
     text = resp.json()["choices"][0]["message"]["content"]
     return _parse_json_response(text)

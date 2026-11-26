@@ -8,7 +8,7 @@ import unittest
 
 class TestSettings(unittest.TestCase):
     def test_empty_optional_vars_use_defaults(self) -> None:
-        from ai_news.config import DEFAULT_GEMINI_MODEL, Settings
+        from ai_news.config import Settings
 
         env = {
             "GEMINI_MODEL": "",
@@ -20,7 +20,7 @@ class TestSettings(unittest.TestCase):
         try:
             os.environ.update(env)
             settings = Settings.from_env()
-            self.assertEqual(settings.gemini_model, DEFAULT_GEMINI_MODEL)
+            self.assertIsNone(settings.gemini_model)
             self.assertEqual(settings.openai_base_url, "https://api.openai.com/v1")
             self.assertEqual(settings.openai_model, "gpt-4o-mini")
         finally:

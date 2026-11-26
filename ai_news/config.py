@@ -9,6 +9,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_FEEDS_PATH = REPO_ROOT / "feeds.yaml"
 
+# Used only when GEMINI_MODEL is explicitly set; otherwise auto-selected at runtime.
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
@@ -48,7 +49,7 @@ class Settings:
     hours_window: int
     max_entries_per_feed: int
     gemini_api_key: str | None
-    gemini_model: str
+    gemini_model: str | None
     gemini_pace_seconds: float
     openai_api_key: str | None
     openai_base_url: str
@@ -74,7 +75,7 @@ class Settings:
             hours_window=int(_env_str("HOURS_WINDOW", "24")),
             max_entries_per_feed=int(_env_str("MAX_ENTRIES_PER_FEED", "25")),
             gemini_api_key=_env_optional("GEMINI_API_KEY"),
-            gemini_model=_env_str("GEMINI_MODEL", DEFAULT_GEMINI_MODEL),
+            gemini_model=_env_optional("GEMINI_MODEL"),
             gemini_pace_seconds=float(_env_str("GEMINI_PACE_SECONDS", "4.0")),
             openai_api_key=_env_optional("OPENAI_API_KEY"),
             openai_base_url=_env_str("OPENAI_BASE_URL", DEFAULT_OPENAI_BASE_URL).rstrip(

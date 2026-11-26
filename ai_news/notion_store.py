@@ -203,7 +203,9 @@ class NotionClient:
             for block in data.get("results", []):
                 if block.get("type") != "child_page":
                     continue
-                block_title = _plain_text(block.get("child_page", {}).get("title", []))
+                block_title = parse_child_page_title(
+                    block.get("child_page", {}).get("title")
+                )
                 if block_title == title:
                     return block.get("id")
             if not data.get("has_more"):
@@ -386,6 +388,17 @@ def _paragraph_block(text: str) -> dict[str, Any]:
             "rich_text": [{"type": "text", "text": {"content": text[:2000]}}],
         },
     }
+
+
+def parse_child_page_title(title_field: Any) -> str:
+    """Notion child_page.title may be a plain string or rich_text array."""
+    if title_field is None:
+        return ""
+    if isinstance(title_field, str):
+        return title_field
+    if isinstance(title_field, list):
+        return _plain_text(title_field)
+    return str(title_field)
 
 
 def _plain_text(rich: list[dict[str, Any]]) -> str:
